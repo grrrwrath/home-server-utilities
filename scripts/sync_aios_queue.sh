@@ -1,42 +1,30 @@
 #!/bin/bash
-# ============================================================
-# sync_aios_queue.sh
-# Pulls Gemini MD files from Google Drive AIOS_Queue into
-# the aios GitHub repo
-# ============================================================
-# Cron: */5 * * * * /Users/grrrwrath/Botclave/apps/home-server-utilities/scripts/sync_aios_queue.sh
-# ============================================================
-
 set -euo pipefail
+export PATH="/opt/homebrew/bin:$PATH"
 
 AIOS_REPO="/Users/grrrwrath/Botclave/apps/aios"
-QUEUE="$AIOS_REPO/📥 workspace/planning/queue"
-LOG="/Users/grrrwrath/Botclave/apps/home-server-utilities/logs/sync_aios_queue.log"
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+INCOMING="$AIOS_REPO/inbox/incoming"
+RCLONE_REMOTE="GoogleDrive:/"
+LOG_PREFIX="[aios-transporter]"
 
-mkdir -p "$(dirname "$LOG")"
-
-echo "[$TIMESTAMP] Starting sync..." >> "$LOG"
-
-# ── Step 1: Pull from Google Drive ──
-rclone move "GoogleDrive:/AIOS_Queue" "$QUEUE/" \
-  --atomic \
-  --log-file="$LOG" \
-  --log-level INFO
-
-# ── Step 2: Check for new files ──
+mkdir -p "$INCOMING"
 cd "$AIOS_REPO"
-STATUS=$(git status --porcelain)
+git pull --rebase --quiet origin main 2>/dev/null || true
 
-if [ -z "$STATUS" ]; then
-  echo "[$TIMESTAMP] No new files. Exiting." >> "$LOG"
-  exit 0
+rclone move "$RCLONE_REMOTE" "$INCOMING/" \
+  --include "inbox_*" \
+  --verbose \
+  2>&1 | while read -r line; do echo "$(date '+%Y-%m-%d %H:%M:%S') $LOG_PREFIX $line"; done
+
+cd "$AIOS_REPO"
+if [ -n "$(git status --porcelain inbox/incoming/)" ]; then
+  git pull --rebase --quiet origin main 2>/dev/null || true
+  git add inbox/incoming/
+  git commit -m "inbox: transport $(git status --porcelain inbox/incoming/ | wc -l | tr -d ' ') file(s) from Drive"
+  git push origin main || {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $LOG_PREFIX Push failed, will retry next tick."
+  }
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $LOG_PREFIX Committed and pushed new files."
+else
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $LOG_PREFIX No new files."
 fi
-
-# ── Step 3: Commit and push ──
-echo "[$TIMESTAMP] New files detected — committing..." >> "$LOG"
-git add .
-git commit -m "aios: auto-sync queue [$TIMESTAMP]"
-git push origin main
-
-echo "[$TIMESTAMP] ✓ Done." >> "$LOG"
